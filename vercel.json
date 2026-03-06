@@ -2,8 +2,24 @@
   "version": 2,
   "rewrites": [
     {
-      "source": "/:route(comic|novel|anime|moviebox|dramabox|reelshort|netshort|melolo|flickreels|freereels|shortmax)/:path*",
-      "destination": "https://backup-api-proxy-worker.rizkimgrms.workers.dev/:route/:path*"
+      "source": "/moviebox/:path*",
+      "destination": "/api/proxy?provider=moviebox&path=:path*"
+    },
+    {
+      "source": "/dramabox/:path*",
+      "destination": "/api/proxy?provider=dramabox&path=:path*"
+    },
+    {
+      "source": "/netshort/:path*",
+      "destination": "/api/proxy?provider=netshort&path=:path*"
+    },
+    {
+      "source": "/docs",
+      "destination": "/api/proxy?provider=docs"
+    },
+    {
+      "source": "/openapi.json",
+      "destination": "/api/proxy?provider=openapi"
     }
   ]
 }
