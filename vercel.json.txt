@@ -1,0 +1,49 @@
+{
+  "version": 2,
+  "rewrites": [
+    {
+      "source": "/comic/:path*",
+      "destination": "https://www.sankavollerei.com/comic/:path*"
+    },
+    {
+      "source": "/novel/:path*",
+      "destination": "https://www.sankavollerei.com/novel/:path*"
+    },
+    {
+      "source": "/anime/:path*",
+      "destination": "https://www.sankavollerei.com/anime/:path*"
+    },
+    {
+      "source": "/moviebox/:path*",
+      "destination": "https://api.sansekai.my.id/api/moviebox/:path*"
+    },
+    {
+      "source": "/dramabox/:path*",
+      "destination": "https://api.sansekai.my.id/api/dramabox/:path*"
+    },
+    {
+      "source": "/reelshort/:path*",
+      "destination": "https://api.sansekai.my.id/api/reelshort/:path*"
+    },
+    {
+      "source": "/netshort/:path*",
+      "destination": "https://api.sansekai.my.id/api/netshort/:path*"
+    },
+    {
+      "source": "/melolo/:path*",
+      "destination": "https://api.sansekai.my.id/api/melolo/:path*"
+    },
+    {
+      "source": "/flickreels/:path*",
+      "destination": "https://api.sansekai.my.id/api/flickreels/:path*"
+    },
+    {
+      "source": "/freereels/:path*",
+      "destination": "https://api.sansekai.my.id/api/freereels/:path*"
+    },
+    {
+      "source": "/shortmax/:path*",
+      "destination": "https://api.sansekai.my.id/api/shortmax/:path*"
+    }
+  ]
+}
