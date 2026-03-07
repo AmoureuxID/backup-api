@@ -60,6 +60,13 @@ function decodeUrlSafe(value) {
   }
 }
 
+function randomId() {
+  if (globalThis.crypto && typeof globalThis.crypto.randomUUID === "function") {
+    return globalThis.crypto.randomUUID();
+  }
+  return `dbx-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
 function dedupeBy(items, keyFn) {
   const out = [];
   const seen = new Set();
@@ -149,6 +156,7 @@ function extractDramaboxEpisodes(payload) {
 
 function transformDramabox(transform, payload, params) {
   const data = payload?.data ?? payload ?? {};
+  const bookData = data?.book && typeof data.book === "object" ? data.book : data;
 
   if (transform === "dramabox-list") {
     return extractDramaboxList(payload);
@@ -180,21 +188,21 @@ function transformDramabox(transform, payload, params) {
 
   if (transform === "dramabox-detail") {
     const chapterList = extractDramaboxEpisodes(payload);
-    const chapterCount = Number(data.chapterCount || chapterList.length || 0);
+    const chapterCount = Number(bookData.chapterCount || data.chapterCount || chapterList.length || 0);
     const availableChapterCount = chapterList.length;
     return {
-      bookId: String(data.bookId || params.get("bookId") || ""),
-      bookName: data.bookName || "",
-      coverWap: data.bookCover || data.coverWap || data.cover || "",
-      cover: data.bookCover || data.cover || data.coverWap || "",
+      bookId: String(bookData.bookId || data.bookId || params.get("bookId") || ""),
+      bookName: bookData.bookName || data.bookName || "",
+      coverWap: bookData.bookCover || bookData.coverWap || bookData.cover || data.bookCover || data.coverWap || data.cover || "",
+      cover: bookData.bookCover || bookData.cover || bookData.coverWap || data.bookCover || data.cover || data.coverWap || "",
       chapterCount,
       availableChapterCount,
       chapterLoadIncomplete: chapterCount > availableChapterCount,
-      introduction: data.introduction || "",
-      tags: asArray(data.tags),
-      tagV3s: asArray(data.tagV3s),
-      shelfTime: data.shelfTime || "",
-      inLibrary: Boolean(data.inLibrary),
+      introduction: bookData.introduction || data.introduction || "",
+      tags: asArray(bookData.tags?.length ? bookData.tags : data.tags),
+      tagV3s: asArray(bookData.tagV3s?.length ? bookData.tagV3s : data.tagV3s),
+      shelfTime: bookData.shelfTime || data.shelfTime || "",
+      inLibrary: Boolean(bookData.inLibrary ?? data.inLibrary),
       playChapterIndex: Number(data.playChapterIndex || 0),
       payChapterNum: Number(data.payChapterNum || 0),
       chapterList,
@@ -587,6 +595,41 @@ async function fetchWorkerJson(workerBase, provider, path, params, proxySecret, 
   return await response.json().catch(() => null);
 }
 
+function enrichDramaboxBatchParams(params, detailPayload) {
+  const nextParams = new URLSearchParams(params);
+  const detailData = detailPayload?.data ?? {};
+  const firstPlaySourceVo =
+    detailData?.firstPlaySourceVo && typeof detailData.firstPlaySourceVo === "object"
+      ? detailData.firstPlaySourceVo
+      : {};
+
+  if (!nextParams.get("currencyPlaySource")) {
+    nextParams.set("currencyPlaySource", firstPlaySourceVo.firstPlaySource || "discover_175_rec");
+  }
+  if (!nextParams.get("currencyPlaySourceName")) {
+    nextParams.set(
+      "currencyPlaySourceName",
+      firstPlaySourceVo.firstPlaySourceName || "首页发现_Untukmu_推荐列表"
+    );
+  }
+  if (!nextParams.get("startUpKey")) {
+    nextParams.set("startUpKey", randomId());
+  }
+  if (!nextParams.get("rid")) {
+    nextParams.set("rid", "");
+  }
+  if (!nextParams.get("pullCid")) {
+    nextParams.set("pullCid", "");
+  }
+  if (!nextParams.get("needEndRecommend")) {
+    nextParams.set("needEndRecommend", "0");
+  }
+  if (!nextParams.get("enterReaderChapterIndex")) {
+    nextParams.set("enterReaderChapterIndex", "0");
+  }
+  return nextParams;
+}
+
 async function fetchAggregatedDramaboxPayload(workerBase, params, proxySecret, reqHeaders) {
   const baseParams = new URLSearchParams(params);
   const initialParams = new URLSearchParams(baseParams);
@@ -682,9 +725,10 @@ async function buildDramaboxEpisodesPayload(workerBase, params, proxySecret, req
   }
 
   const detailEpisodes = extractDramaboxEpisodes(detailPayload);
+  const playbackParams = enrichDramaboxBatchParams(params, detailPayload);
   const playablePayload = await fetchAggregatedDramaboxPayload(
     workerBase,
-    params,
+    playbackParams,
     proxySecret,
     reqHeaders
   );
