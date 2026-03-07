@@ -92,11 +92,17 @@ function shuffleTake(items, maxItems = 12) {
 function extractDramaboxList(payload) {
   const data = payload?.data ?? payload ?? {};
   const list = [];
+  const classifyBookList =
+    data?.classifyBookList && typeof data.classifyBookList === "object"
+      ? data.classifyBookList
+      : {};
 
   if (Array.isArray(data)) list.push(...data);
   if (Array.isArray(data.rankList)) list.push(...data.rankList);
   if (Array.isArray(data.searchList)) list.push(...data.searchList);
   if (Array.isArray(data.records)) list.push(...data.records);
+  if (Array.isArray(classifyBookList.records)) list.push(...classifyBookList.records);
+  if (Array.isArray(classifyBookList.list)) list.push(...classifyBookList.list);
 
   for (const column of asArray(data.columnVoList)) {
     list.push(...asArray(column?.bookList));
