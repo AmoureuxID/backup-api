@@ -451,7 +451,6 @@ function normalizeCompat(provider, rawPath, query) {
     }
 
     if (action === "trending") {
-      if (!params.get("rankType")) params.set("rankType", "1");
       return { provider, action, path: "rank", params, transform: "dramabox-list", localJson: null, needDetailPath: false };
     }
     if (action === "rekomendasi") {
@@ -820,6 +819,70 @@ function applyTransform(normalized, payload) {
   return payload;
 }
 
+async function fetchNormalizedPayload(workerBase, proxySecret, reqHeaders, normalized) {
+  const target = buildTargetUrl(workerBase, normalized.provider, normalized.path, normalized.params);
+  const upstream = await fetch(target, {
+    method: "GET",
+    headers: {
+      "x-proxy-secret": proxySecret,
+      accept: reqHeaders.accept || "application/json",
+      "user-agent": reqHeaders["user-agent"] || "vercel-proxy",
+    },
+  });
+
+  if (!normalized.transform || !upstream.ok) {
+    return { upstream, payload: null, transformed: null };
+  }
+
+  const payload = await upstream.clone().json().catch(() => null);
+  if (!payload) {
+    return { upstream, payload: null, transformed: null };
+  }
+
+  return {
+    upstream,
+    payload,
+    transformed: applyTransform(normalized, payload),
+  };
+}
+
+async function fetchMergedDramaboxTrending(workerBase, proxySecret, reqHeaders, normalized) {
+  const rankTypes = ["1", "2", "3"];
+  const results = await Promise.all(
+    rankTypes.map(async (rankType) => {
+      const params = new URLSearchParams(normalized.params);
+      params.set("rankType", rankType);
+      return fetchNormalizedPayload(workerBase, proxySecret, reqHeaders, {
+        ...normalized,
+        params,
+      });
+    })
+  );
+
+  const failed = results.find(({ upstream }) => !upstream.ok);
+  if (failed) {
+    return failed;
+  }
+
+  const merged = results.flatMap(({ transformed }) =>
+    Array.isArray(transformed) ? transformed : []
+  );
+
+  const seen = new Set();
+  const transformed = merged.filter((item) => {
+    const id = String(item?.bookId || "");
+    if (!id || seen.has(id)) return false;
+    seen.add(id);
+    return true;
+  });
+
+  return {
+    upstream: results[0]?.upstream,
+    payload: null,
+    transformed,
+  };
+}
+
 export default async function handler(req, res) {
   setCors(res, req);
 
@@ -882,28 +945,27 @@ export default async function handler(req, res) {
     }
   }
 
-  const target = buildTargetUrl(workerBase, provider, normalized.path, normalized.params);
-
   try {
-    const upstream = await fetch(target, {
-      method: "GET",
-      headers: {
-        "x-proxy-secret": proxySecret,
-        accept: req.headers.accept || "application/json",
-        "user-agent": req.headers["user-agent"] || "vercel-proxy",
-      },
-    });
+    const result =
+      normalized.provider === "dramabox" &&
+      normalized.action === "trending" &&
+      !normalized.params.get("rankType")
+        ? await fetchMergedDramaboxTrending(workerBase, proxySecret, req.headers, normalized)
+        : await fetchNormalizedPayload(workerBase, proxySecret, req.headers, normalized);
+
+    const { upstream, payload, transformed } = result;
 
     if (!normalized.transform || !upstream.ok) {
       return forwardResponse(upstream, res);
     }
 
-    const payload = await upstream.clone().json().catch(() => null);
     if (!payload) {
+      if (transformed !== null) {
+        return res.status(upstream.status).json(transformed);
+      }
       return forwardResponse(upstream, res);
     }
 
-    const transformed = applyTransform(normalized, payload);
     return res.status(upstream.status).json(transformed);
   } catch {
     return res.status(502).json({ error: "Bad Gateway" });
