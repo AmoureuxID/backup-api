@@ -1,6 +1,8 @@
 const ALLOWED = new Set(["moviebox", "dramabox", "netshort", "docs", "openapi"]);
 const MOVIEBOX_CACHE_KEY = "__movieboxDetailPathCache";
 const MOVIEBOX_CACHE_LIMIT = 5000;
+const DRAMABOX_BATCH_SIZE = 6;
+const DRAMABOX_MAX_CHUNK_REQUESTS = 24;
 
 if (!globalThis[MOVIEBOX_CACHE_KEY]) {
   globalThis[MOVIEBOX_CACHE_KEY] = new Map();
@@ -143,11 +145,17 @@ function transformDramabox(transform, payload, params) {
       coverWap: data.bookCover || data.coverWap || data.cover || "",
       cover: data.bookCover || data.cover || data.coverWap || "",
       chapterCount: Number(data.chapterCount || chapterList.length || 0),
+      availableChapterCount: Number(data.availableChapterCount || chapterList.length || 0),
+      chapterLoadIncomplete: Boolean(data.chapterLoadIncomplete),
       introduction: data.introduction || "",
       tags: asArray(data.tags),
       tagV3s: asArray(data.tagV3s),
       shelfTime: data.shelfTime || "",
       inLibrary: Boolean(data.inLibrary),
+      playChapterIndex: Number(data.playChapterIndex || 0),
+      payChapterNum: Number(data.payChapterNum || 0),
+      chapterList,
+      episodes: chapterList,
     };
   }
 
@@ -190,7 +198,32 @@ function transformNetshort(transform, payload) {
   }
 
   if (transform === "netshort-detail") {
-    return data;
+    const episodeInfos = asArray(data.shortPlayEpisodeInfos);
+    const normalizedEpisodes = episodeInfos.map((episode) => ({
+      episodeId: episode?.episodeId || "",
+      episodeNo: Number(episode?.episodeNo || 0),
+      cover: episode?.episodeCover || data.shortPlayCover || "",
+      videoUrl: episode?.playVoucher || "",
+      quality: episode?.playClarity || "",
+      isLock: Boolean(episode?.isLock),
+      likeNums: episode?.likeNums || "",
+      subtitleUrl: asArray(episode?.subtitleList)[0]?.url || "",
+    }));
+
+    return {
+      ...data,
+      title: data.shortPlayName || data.title || "",
+      cover: data.shortPlayCover || data.cover || "",
+      description: data.shotIntroduce || data.description || "",
+      labels: asArray(data.shortPlayLabels?.length ? data.shortPlayLabels : data.labelArray),
+      totalEpisodes: Number(data.totalEpisode || episodeInfos.length || 0),
+      availableEpisodeCount: normalizedEpisodes.length,
+      episodes: normalizedEpisodes,
+      shortPlayEpisodeInfos: episodeInfos,
+      success: payload?.success ?? true,
+      status: payload?.status,
+      message: payload?.message,
+    };
   }
 
   if (transform === "netshort-search") {
@@ -511,6 +544,100 @@ async function fetchWorkerJson(workerBase, provider, path, params, proxySecret, 
   return await response.json().catch(() => null);
 }
 
+function sortDramaboxChapters(chapters) {
+  return [...asArray(chapters)].sort((left, right) => {
+    const leftIndex = toInt(left?.chapterIndex, 0);
+    const rightIndex = toInt(right?.chapterIndex, 0);
+    return leftIndex - rightIndex;
+  });
+}
+
+function dedupeDramaboxChapters(chapters) {
+  return dedupeBy(chapters, (chapter) =>
+    String(chapter?.chapterId || chapter?.chapterIndex || chapter?.chapterName || "")
+  );
+}
+
+async function fetchAggregatedDramaboxPayload(workerBase, params, proxySecret, reqHeaders) {
+  const baseParams = new URLSearchParams(params);
+  const initialParams = new URLSearchParams(baseParams);
+  initialParams.set("index", "1");
+  initialParams.set("boundaryIndex", "0");
+  initialParams.set("loadDirection", "2");
+
+  const firstPayload = await fetchWorkerJson(
+    workerBase,
+    "dramabox",
+    "batch-load",
+    initialParams,
+    proxySecret,
+    reqHeaders
+  );
+
+  if (!firstPayload?.data || typeof firstPayload.data !== "object") {
+    return null;
+  }
+
+  const mergedPayload =
+    typeof structuredClone === "function"
+      ? structuredClone(firstPayload)
+      : JSON.parse(JSON.stringify(firstPayload));
+  const mergedData = mergedPayload.data ?? {};
+  const chapterCount = Math.max(0, toInt(mergedData.chapterCount, 0));
+
+  let chapters = sortDramaboxChapters(dedupeDramaboxChapters(mergedData.chapterList));
+  let nextIndex = chapters.length + 1;
+  let requests = 1;
+
+  while (
+    chapterCount > 0 &&
+    chapters.length < chapterCount &&
+    requests < DRAMABOX_MAX_CHUNK_REQUESTS
+  ) {
+    const chunkParams = new URLSearchParams(baseParams);
+    chunkParams.set("index", String(nextIndex));
+    chunkParams.set("boundaryIndex", String(Math.max(nextIndex - 1, 0)));
+    chunkParams.set("loadDirection", "2");
+
+    const chunkPayload = await fetchWorkerJson(
+      workerBase,
+      "dramabox",
+      "batch-load",
+      chunkParams,
+      proxySecret,
+      reqHeaders
+    );
+
+    requests += 1;
+
+    if (!chunkPayload?.success || !chunkPayload?.data || typeof chunkPayload.data !== "object") {
+      break;
+    }
+
+    const nextChapters = sortDramaboxChapters(chunkPayload.data.chapterList);
+    if (!nextChapters.length) {
+      break;
+    }
+
+    const mergedChapters = sortDramaboxChapters(
+      dedupeDramaboxChapters([...chapters, ...nextChapters])
+    );
+
+    if (mergedChapters.length === chapters.length) {
+      break;
+    }
+
+    chapters = mergedChapters;
+    nextIndex += Math.max(nextChapters.length, DRAMABOX_BATCH_SIZE);
+  }
+
+  mergedData.chapterList = chapters;
+  mergedData.availableChapterCount = chapters.length;
+  mergedData.chapterLoadIncomplete = chapterCount > 0 && chapters.length < chapterCount;
+  mergedPayload.data = mergedData;
+  return mergedPayload;
+}
+
 async function resolveMovieboxDetailPath(subjectId, workerBase, proxySecret, reqHeaders) {
   if (!subjectId) return null;
   const cache = getMovieboxCache();
@@ -605,6 +732,24 @@ export default async function handler(req, res) {
       normalized.params.set("detailPath", resolvedDetailPath);
     } else if (subjectId) {
       normalized.params.set("detailPath", subjectId);
+    }
+  }
+
+  if (
+    normalized.provider === "dramabox" &&
+    (normalized.transform === "dramabox-detail" ||
+      normalized.transform === "dramabox-episodes")
+  ) {
+    const aggregatedPayload = await fetchAggregatedDramaboxPayload(
+      workerBase,
+      normalized.params,
+      proxySecret,
+      req.headers
+    );
+
+    if (aggregatedPayload) {
+      const transformed = applyTransform(normalized, aggregatedPayload);
+      return res.status(200).json(transformed);
     }
   }
 
