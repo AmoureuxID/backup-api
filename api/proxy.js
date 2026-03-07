@@ -449,16 +449,10 @@ function normalizeCompat(provider, rawPath, query) {
       return { provider, action, path: "rank", params, transform: "dramabox-list", localJson: null, needDetailPath: false };
     }
     if (action === "dubindo") {
-      const classify = (params.get("classify") || "terbaru").toLowerCase();
-      params.delete("classify");
-      if (classify === "terpopuler" || classify === "trending" || classify === "popular") {
-        if (!params.get("rankType")) params.set("rankType", "1");
-        return { provider, action, path: "rank", params, transform: "dramabox-list", localJson: null, needDetailPath: false };
-      }
-      if (classify === "vip") {
-        return { provider, action, path: "vip", params, transform: "dramabox-list", localJson: null, needDetailPath: false };
-      }
-      return { provider, action, path: "latest", params, transform: "dramabox-list", localJson: null, needDetailPath: false };
+      if (!params.get("classify")) params.set("classify", "terbaru");
+      if (!params.get("audio")) params.set("audio", "1");
+      if (!params.get("pageSize")) params.set("pageSize", "15");
+      return { provider, action, path: "classify", params, transform: "dramabox-list", localJson: null, needDetailPath: false };
     }
     if (action === "randomdrama") {
       return { provider, action, path: "foryou", params, transform: "dramabox-random", localJson: null, needDetailPath: false };
