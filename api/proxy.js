@@ -454,6 +454,12 @@ function normalizeCompat(provider, rawPath, query) {
       if (!params.get("rankType")) params.set("rankType", "1");
       return { provider, action, path: "rank", params, transform: "dramabox-list", localJson: null, needDetailPath: false };
     }
+    if (action === "rekomendasi") {
+      if (!params.get("pageNo")) {
+        params.set("pageNo", params.get("page") || "1");
+      }
+      return { provider, action, path: "recommend", params, transform: "dramabox-list", localJson: null, needDetailPath: false };
+    }
     if (action === "dubindo") {
       if (!params.get("classify")) params.set("classify", "terbaru");
       if (!params.get("audio")) params.set("audio", "1");
