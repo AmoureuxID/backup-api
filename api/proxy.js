@@ -1,9 +1,6 @@
 const ALLOWED = new Set(["moviebox", "dramabox", "netshort", "docs", "openapi"]);
 const MOVIEBOX_CACHE_KEY = "__movieboxDetailPathCache";
 const MOVIEBOX_CACHE_LIMIT = 5000;
-const DRAMABOX_BATCH_SIZE = 6;
-const DRAMABOX_MAX_CHUNK_REQUESTS = 24;
-
 if (!globalThis[MOVIEBOX_CACHE_KEY]) {
   globalThis[MOVIEBOX_CACHE_KEY] = new Map();
 }
@@ -106,6 +103,48 @@ function extractDramaboxList(payload) {
   return dedupeBy(list, (item) => String(item?.bookId || item?.id || ""));
 }
 
+function sortDramaboxChapters(chapters) {
+  return [...asArray(chapters)].sort((left, right) => {
+    const leftIndex = toInt(left?.chapterIndex, 0);
+    const rightIndex = toInt(right?.chapterIndex, 0);
+    return leftIndex - rightIndex;
+  });
+}
+
+function dedupeDramaboxChapters(chapters) {
+  return dedupeBy(chapters, (chapter) =>
+    String(chapter?.chapterId || chapter?.chapterIndex || chapter?.chapterName || "")
+  );
+}
+
+function normalizeDramaboxEpisode(episode) {
+  const chapterIndex = toInt(episode?.chapterIndex, 0);
+  const isCharge = toInt(episode?.isCharge, 0);
+  const isPay = toInt(episode?.isPay, isCharge ? 0 : 1);
+  const chargeChapter =
+    typeof episode?.chargeChapter === "boolean" ? episode.chargeChapter : Boolean(isCharge);
+
+  return {
+    ...episode,
+    chapterId: String(episode?.chapterId || ""),
+    chapterIndex,
+    isCharge,
+    isPay,
+    chapterName: episode?.chapterName || `EP ${chapterIndex + 1}`,
+    chapterImg: episode?.chapterImg || "",
+    cdnList: asArray(episode?.cdnList),
+    chargeChapter,
+  };
+}
+
+function extractDramaboxEpisodes(payload) {
+  const data = payload?.data ?? payload ?? {};
+  const rawEpisodes = asArray(data.chapterList?.length ? data.chapterList : data.list);
+  return sortDramaboxChapters(
+    dedupeDramaboxChapters(rawEpisodes.map((episode) => normalizeDramaboxEpisode(episode)))
+  );
+}
+
 function transformDramabox(transform, payload, params) {
   const data = payload?.data ?? payload ?? {};
 
@@ -138,15 +177,17 @@ function transformDramabox(transform, payload, params) {
   }
 
   if (transform === "dramabox-detail") {
-    const chapterList = asArray(data.chapterList);
+    const chapterList = extractDramaboxEpisodes(payload);
+    const chapterCount = Number(data.chapterCount || chapterList.length || 0);
+    const availableChapterCount = chapterList.length;
     return {
       bookId: String(data.bookId || params.get("bookId") || ""),
       bookName: data.bookName || "",
       coverWap: data.bookCover || data.coverWap || data.cover || "",
       cover: data.bookCover || data.cover || data.coverWap || "",
-      chapterCount: Number(data.chapterCount || chapterList.length || 0),
-      availableChapterCount: Number(data.availableChapterCount || chapterList.length || 0),
-      chapterLoadIncomplete: Boolean(data.chapterLoadIncomplete),
+      chapterCount,
+      availableChapterCount,
+      chapterLoadIncomplete: chapterCount > availableChapterCount,
       introduction: data.introduction || "",
       tags: asArray(data.tags),
       tagV3s: asArray(data.tagV3s),
@@ -160,7 +201,7 @@ function transformDramabox(transform, payload, params) {
   }
 
   if (transform === "dramabox-episodes") {
-    return asArray(data.chapterList);
+    return extractDramaboxEpisodes(payload);
   }
 
   return payload;
@@ -413,10 +454,10 @@ function normalizeCompat(provider, rawPath, query) {
       return { provider, action, path: "foryou", params, transform: "dramabox-random", localJson: null, needDetailPath: false };
     }
     if (action === "detail") {
-      return { provider, action, path: "batch-load", params, transform: "dramabox-detail", localJson: null, needDetailPath: false };
+      return { provider, action, path: "detail", params, transform: "dramabox-detail", localJson: null, needDetailPath: false };
     }
     if (action === "allepisode") {
-      return { provider, action, path: "batch-load", params, transform: "dramabox-episodes", localJson: null, needDetailPath: false };
+      return { provider, action, path: "detail", params, transform: "dramabox-episodes", localJson: null, needDetailPath: false };
     }
     if (action === "search") {
       return { provider, action, path: "search", params, transform: "dramabox-search", localJson: null, needDetailPath: false };
@@ -544,100 +585,6 @@ async function fetchWorkerJson(workerBase, provider, path, params, proxySecret, 
   return await response.json().catch(() => null);
 }
 
-function sortDramaboxChapters(chapters) {
-  return [...asArray(chapters)].sort((left, right) => {
-    const leftIndex = toInt(left?.chapterIndex, 0);
-    const rightIndex = toInt(right?.chapterIndex, 0);
-    return leftIndex - rightIndex;
-  });
-}
-
-function dedupeDramaboxChapters(chapters) {
-  return dedupeBy(chapters, (chapter) =>
-    String(chapter?.chapterId || chapter?.chapterIndex || chapter?.chapterName || "")
-  );
-}
-
-async function fetchAggregatedDramaboxPayload(workerBase, params, proxySecret, reqHeaders) {
-  const baseParams = new URLSearchParams(params);
-  const initialParams = new URLSearchParams(baseParams);
-  initialParams.set("index", "1");
-  initialParams.set("boundaryIndex", "0");
-  initialParams.set("loadDirection", "2");
-
-  const firstPayload = await fetchWorkerJson(
-    workerBase,
-    "dramabox",
-    "batch-load",
-    initialParams,
-    proxySecret,
-    reqHeaders
-  );
-
-  if (!firstPayload?.data || typeof firstPayload.data !== "object") {
-    return null;
-  }
-
-  const mergedPayload =
-    typeof structuredClone === "function"
-      ? structuredClone(firstPayload)
-      : JSON.parse(JSON.stringify(firstPayload));
-  const mergedData = mergedPayload.data ?? {};
-  const chapterCount = Math.max(0, toInt(mergedData.chapterCount, 0));
-
-  let chapters = sortDramaboxChapters(dedupeDramaboxChapters(mergedData.chapterList));
-  let nextIndex = chapters.length + 1;
-  let requests = 1;
-
-  while (
-    chapterCount > 0 &&
-    chapters.length < chapterCount &&
-    requests < DRAMABOX_MAX_CHUNK_REQUESTS
-  ) {
-    const chunkParams = new URLSearchParams(baseParams);
-    chunkParams.set("index", String(nextIndex));
-    chunkParams.set("boundaryIndex", String(Math.max(nextIndex - 1, 0)));
-    chunkParams.set("loadDirection", "2");
-
-    const chunkPayload = await fetchWorkerJson(
-      workerBase,
-      "dramabox",
-      "batch-load",
-      chunkParams,
-      proxySecret,
-      reqHeaders
-    );
-
-    requests += 1;
-
-    if (!chunkPayload?.success || !chunkPayload?.data || typeof chunkPayload.data !== "object") {
-      break;
-    }
-
-    const nextChapters = sortDramaboxChapters(chunkPayload.data.chapterList);
-    if (!nextChapters.length) {
-      break;
-    }
-
-    const mergedChapters = sortDramaboxChapters(
-      dedupeDramaboxChapters([...chapters, ...nextChapters])
-    );
-
-    if (mergedChapters.length === chapters.length) {
-      break;
-    }
-
-    chapters = mergedChapters;
-    nextIndex += Math.max(nextChapters.length, DRAMABOX_BATCH_SIZE);
-  }
-
-  mergedData.chapterList = chapters;
-  mergedData.availableChapterCount = chapters.length;
-  mergedData.chapterLoadIncomplete = chapterCount > 0 && chapters.length < chapterCount;
-  mergedPayload.data = mergedData;
-  return mergedPayload;
-}
-
 async function resolveMovieboxDetailPath(subjectId, workerBase, proxySecret, reqHeaders) {
   if (!subjectId) return null;
   const cache = getMovieboxCache();
@@ -732,24 +679,6 @@ export default async function handler(req, res) {
       normalized.params.set("detailPath", resolvedDetailPath);
     } else if (subjectId) {
       normalized.params.set("detailPath", subjectId);
-    }
-  }
-
-  if (
-    normalized.provider === "dramabox" &&
-    (normalized.transform === "dramabox-detail" ||
-      normalized.transform === "dramabox-episodes")
-  ) {
-    const aggregatedPayload = await fetchAggregatedDramaboxPayload(
-      workerBase,
-      normalized.params,
-      proxySecret,
-      req.headers
-    );
-
-    if (aggregatedPayload) {
-      const transformed = applyTransform(normalized, aggregatedPayload);
-      return res.status(200).json(transformed);
     }
   }
 
