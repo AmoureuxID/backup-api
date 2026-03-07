@@ -1,4 +1,14 @@
 const ALLOWED = new Set(["moviebox", "dramabox", "netshort", "docs", "openapi"]);
+const MOVIEBOX_CACHE_KEY = "__movieboxDetailPathCache";
+const MOVIEBOX_CACHE_LIMIT = 5000;
+
+if (!globalThis[MOVIEBOX_CACHE_KEY]) {
+  globalThis[MOVIEBOX_CACHE_KEY] = new Map();
+}
+
+function getMovieboxCache() {
+  return globalThis[MOVIEBOX_CACHE_KEY];
+}
 
 function one(value, fallback = "") {
   if (Array.isArray(value)) return value[0] ?? fallback;
@@ -15,6 +25,11 @@ function splitPath(path) {
     .replace(/^\/+|\/+$/g, "")
     .split("/")
     .filter(Boolean);
+}
+
+function asArray(value) {
+  if (Array.isArray(value)) return value;
+  return [];
 }
 
 function toSearchParams(query) {
@@ -44,147 +59,245 @@ function decodeUrlSafe(value) {
   }
 }
 
-function normalizeCompat(provider, rawPath, query) {
-  const segments = splitPath(rawPath);
-  const action = segments[0] || "";
-  const params = toSearchParams(query);
+function dedupeBy(items, keyFn) {
+  const out = [];
+  const seen = new Set();
+  for (const item of asArray(items)) {
+    if (!item || typeof item !== "object") continue;
+    const key = keyFn(item);
+    if (key && seen.has(key)) continue;
+    if (key) seen.add(key);
+    out.push(item);
+  }
+  return out;
+}
 
-  if (provider === "docs" || provider === "openapi") {
-    return { path: action, params, transform: null, localJson: null };
+function shuffleTake(items, maxItems = 12) {
+  const arr = [...asArray(items)];
+  for (let i = arr.length - 1; i > 0; i -= 1) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+  return arr.slice(0, maxItems);
+}
+
+function extractDramaboxList(payload) {
+  const data = payload?.data ?? payload ?? {};
+  const list = [];
+
+  if (Array.isArray(data)) list.push(...data);
+  if (Array.isArray(data.rankList)) list.push(...data.rankList);
+  if (Array.isArray(data.searchList)) list.push(...data.searchList);
+  if (Array.isArray(data.records)) list.push(...data.records);
+
+  for (const column of asArray(data.columnVoList)) {
+    list.push(...asArray(column?.bookList));
   }
 
-  if (provider === "dramabox") {
-    if (action === "detail" && segments[1] && !params.get("bookId")) {
-      params.set("bookId", segments[1]);
-    }
-    if (action === "allepisode" && segments[1] && !params.get("bookId")) {
-      params.set("bookId", segments[1]);
-    }
-    if (action === "search") {
-      const queryText = params.get("query");
-      if (queryText && !params.get("keyword") && !params.get("q")) {
-        params.set("keyword", queryText);
-      }
-    }
-    if (action === "allepisode") {
-      return { path: "batch-load", params, transform: null, localJson: null };
-    }
-    if (action === "trending") {
-      if (!params.get("rankType")) params.set("rankType", "1");
-      return { path: "rank", params, transform: null, localJson: null };
-    }
-    if (action === "dubindo") {
-      const classify = (params.get("classify") || "terbaru").toLowerCase();
-      params.delete("classify");
-      if (classify === "terpopuler" || classify === "trending" || classify === "popular") {
-        if (!params.get("rankType")) params.set("rankType", "1");
-        return { path: "rank", params, transform: null, localJson: null };
-      }
-      if (classify === "vip") {
-        return { path: "vip", params, transform: null, localJson: null };
-      }
-      return { path: "latest", params, transform: null, localJson: null };
-    }
-    if (action === "randomdrama") {
-      return { path: "foryou", params, transform: "dramabox-random", localJson: null };
-    }
-    return { path: action, params, transform: null, localJson: null };
+  list.push(...asArray(data.newTheaterList?.records));
+
+  for (const item of asArray(data.recommendList?.records)) {
+    if (item?.bookId) list.push(item);
+    list.push(...asArray(item?.tagCardVo?.tagBooks));
   }
 
-  if (provider === "netshort") {
-    if (action === "detail" && segments[1] && !params.get("shortPlayId")) {
-      params.set("shortPlayId", segments[1]);
-    }
-    if (action === "allepisode" && segments[1] && !params.get("shortPlayId")) {
-      params.set("shortPlayId", segments[1]);
-    }
-    if (action === "search") {
-      const queryText = params.get("query");
-      if (queryText && !params.get("keyword") && !params.get("q")) {
-        params.set("keyword", queryText);
-      }
-    }
-    if (action === "theaters") {
-      return { path: "homepage", params, transform: null, localJson: null };
-    }
-    if (action === "foryou") {
-      const page = Math.max(1, toInt(params.get("page"), 1));
-      const limit = Math.max(1, toInt(params.get("limit"), 20));
-      params.set("offset", String((page - 1) * limit));
-      params.set("limit", String(limit));
-      return { path: "recommend", params, transform: null, localJson: null };
-    }
-    if (action === "allepisode") {
-      return { path: "detail", params, transform: null, localJson: null };
-    }
-    return { path: action, params, transform: null, localJson: null };
+  return dedupeBy(list, (item) => String(item?.bookId || item?.id || ""));
+}
+
+function transformDramabox(transform, payload, params) {
+  const data = payload?.data ?? payload ?? {};
+
+  if (transform === "dramabox-list") {
+    return extractDramaboxList(payload);
   }
 
-  if (provider === "moviebox") {
-    if (action === "generate-link-stream-video") {
-      const input = decodeUrlSafe(one(query.url));
+  if (transform === "dramabox-search") {
+    return dedupeBy(asArray(data.searchList), (item) => String(item?.bookId || ""));
+  }
+
+  if (transform === "dramabox-vip") {
+    if (Array.isArray(data.columnVoList)) {
       return {
-        path: action,
-        params,
-        transform: null,
-        localJson: {
-          success: true,
-          url: input,
-          link: input,
-          playUrl: input,
-          downloadUrl: input,
-          streamUrl: input,
-          data: {
-            url: input,
-            link: input,
-            playUrl: input,
-            downloadUrl: input,
-            streamUrl: input,
-          },
-        },
+        columnVoList: data.columnVoList,
       };
     }
-
-    if (action === "detail" && segments[1] && !params.get("subjectId") && !params.get("detailPath")) {
-      params.set("subjectId", segments[1]);
-    }
-    if (action === "sources" && segments[1] && !params.get("subjectId") && !params.get("detailPath")) {
-      params.set("subjectId", segments[1]);
-    }
-
-    if (action === "search") {
-      const queryText = params.get("query");
-      if (queryText && !params.get("keyword") && !params.get("q")) {
-        params.set("keyword", queryText);
-      }
-      return { path: "everyone-search", params, transform: null, localJson: null };
-    }
-
-    if (action === "homepage") {
-      return { path: "home", params, transform: null, localJson: null };
-    }
-
-    if (action === "sources") {
-      if (params.get("season") && !params.get("se")) {
-        params.set("se", params.get("season"));
-      }
-      if (params.get("episode") && !params.get("ep")) {
-        params.set("ep", params.get("episode"));
-      }
-      if (params.get("subjectId") && !params.get("detailPath")) {
-        params.set("detailPath", params.get("subjectId"));
-      }
-      return { path: "play", params, transform: null, localJson: null };
-    }
-
-    if (action === "detail" && params.get("subjectId") && !params.get("detailPath")) {
-      params.set("detailPath", params.get("subjectId"));
-    }
-
-    return { path: action, params, transform: null, localJson: null };
+    return {
+      columnVoList: [
+        {
+          title: "VIP",
+          bookList: extractDramaboxList(payload),
+        },
+      ],
+    };
   }
 
-  return { path: action, params, transform: null, localJson: null };
+  if (transform === "dramabox-random") {
+    return { items: shuffleTake(extractDramaboxList(payload), 12) };
+  }
+
+  if (transform === "dramabox-detail") {
+    const chapterList = asArray(data.chapterList);
+    return {
+      bookId: String(data.bookId || params.get("bookId") || ""),
+      bookName: data.bookName || "",
+      coverWap: data.bookCover || data.coverWap || data.cover || "",
+      cover: data.bookCover || data.cover || data.coverWap || "",
+      chapterCount: Number(data.chapterCount || chapterList.length || 0),
+      introduction: data.introduction || "",
+      tags: asArray(data.tags),
+      tagV3s: asArray(data.tagV3s),
+      shelfTime: data.shelfTime || "",
+      inLibrary: Boolean(data.inLibrary),
+    };
+  }
+
+  if (transform === "dramabox-episodes") {
+    return asArray(data.chapterList);
+  }
+
+  return payload;
+}
+
+function unwrapNetshort(payload) {
+  if (payload && typeof payload === "object" && payload.data && typeof payload.data === "object") {
+    return payload.data;
+  }
+  return payload ?? {};
+}
+
+function transformNetshort(transform, payload) {
+  const data = unwrapNetshort(payload);
+
+  if (transform === "netshort-foryou") {
+    return {
+      maxOffset: data.maxOffset,
+      completed: data.completed,
+      contentInfos: asArray(data.contentInfos?.length ? data.contentInfos : data.dataList),
+    };
+  }
+
+  if (transform === "netshort-theaters") {
+    const contentInfos = asArray(data.contentInfos?.length ? data.contentInfos : data.dataList);
+    if (!contentInfos.length) return [];
+    return [
+      {
+        groupId: "netshort-for-you",
+        contentName: "For You",
+        contentRemark: "Recommended",
+        contentInfos,
+      },
+    ];
+  }
+
+  if (transform === "netshort-detail") {
+    return data;
+  }
+
+  if (transform === "netshort-search") {
+    return {
+      searchCodeSearchResult: asArray(data.searchCodeSearchResult),
+    };
+  }
+
+  return payload;
+}
+
+function rememberMovieboxSubject(subject) {
+  if (!subject || typeof subject !== "object") return;
+  const subjectId = subject.subjectId ?? subject.id ?? subject.movieId ?? subject.tvId;
+  const detailPath = subject.detailPath ?? subject.path;
+  if (!subjectId || !detailPath || typeof detailPath !== "string") return;
+  const cache = getMovieboxCache();
+  if (cache.size >= MOVIEBOX_CACHE_LIMIT) {
+    const firstKey = cache.keys().next().value;
+    if (firstKey) cache.delete(firstKey);
+  }
+  cache.set(String(subjectId), detailPath);
+}
+
+function rememberMovieboxFromPayload(payload) {
+  if (!payload || typeof payload !== "object") return;
+  const stack = [payload];
+  const visited = new Set();
+  let steps = 0;
+  const maxSteps = 20000;
+
+  while (stack.length && steps < maxSteps) {
+    const node = stack.pop();
+    steps += 1;
+    if (!node || typeof node !== "object") continue;
+    if (visited.has(node)) continue;
+    visited.add(node);
+
+    rememberMovieboxSubject(node);
+    if (node.subject && typeof node.subject === "object") {
+      rememberMovieboxSubject(node.subject);
+    }
+
+    if (Array.isArray(node)) {
+      for (const item of node) stack.push(item);
+      continue;
+    }
+
+    for (const value of Object.values(node)) {
+      if (value && typeof value === "object") stack.push(value);
+    }
+  }
+}
+
+function transformMoviebox(transform, payload) {
+  rememberMovieboxFromPayload(payload);
+
+  if (transform === "moviebox-search") {
+    const searchList = asArray(payload?.data?.everyoneSearch);
+    return {
+      subjectList: searchList,
+      items: searchList,
+      list: searchList,
+      results: searchList,
+    };
+  }
+
+  if (transform === "moviebox-sources") {
+    const data = payload?.data ?? {};
+    const streams = asArray(data.streams);
+    const firstUrl = streams.find((item) => item?.url)?.url || "";
+    const normalizedData = {
+      list: streams,
+      items: streams,
+      sources: streams,
+      streams,
+      hls: asArray(data.hls),
+      dash: asArray(data.dash),
+      hasResource: Boolean(data.hasResource ?? streams.length > 0),
+      freeNum: data.freeNum,
+      limited: Boolean(data.limited),
+      limitedCode: data.limitedCode || "",
+      url: firstUrl,
+      link: firstUrl,
+      playUrl: firstUrl,
+      downloadUrl: firstUrl,
+    };
+    return {
+      data: normalizedData,
+      list: streams,
+      items: streams,
+      sources: streams,
+      streams,
+      hls: normalizedData.hls,
+      dash: normalizedData.dash,
+      hasResource: normalizedData.hasResource,
+      freeNum: normalizedData.freeNum,
+      limited: normalizedData.limited,
+      limitedCode: normalizedData.limitedCode,
+      url: firstUrl,
+      link: firstUrl,
+      playUrl: firstUrl,
+      downloadUrl: firstUrl,
+    };
+  }
+
+  return payload;
 }
 
 function setCors(res, req) {
@@ -195,38 +308,18 @@ function setCors(res, req) {
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, Accept");
 }
 
-function pickArray(payload) {
-  if (Array.isArray(payload)) return payload;
-  if (!payload || typeof payload !== "object") return [];
-  const candidates = [
-    payload.items,
-    payload.list,
-    payload.data,
-    payload.results,
-    payload.contentInfos,
-    payload.records,
-  ];
-  for (const candidate of candidates) {
-    if (Array.isArray(candidate)) return candidate;
-  }
-  return [];
-}
-
-function shuffleTake(items, maxItems = 12) {
-  const arr = Array.isArray(items) ? [...items] : [];
-  for (let i = arr.length - 1; i > 0; i -= 1) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [arr[i], arr[j]] = [arr[j], arr[i]];
-  }
-  return arr.slice(0, maxItems);
-}
-
 async function forwardResponse(upstream, res) {
   const body = Buffer.from(await upstream.arrayBuffer());
   res.status(upstream.status);
   upstream.headers.forEach((value, key) => {
     const lower = key.toLowerCase();
-    if (lower === "transfer-encoding" || lower === "content-length") return;
+    if (
+      lower === "transfer-encoding" ||
+      lower === "content-length" ||
+      lower === "content-encoding"
+    ) {
+      return;
+    }
     res.setHeader(key, value);
   });
   return res.send(body);
@@ -245,6 +338,226 @@ function buildTargetUrl(workerBase, provider, path, params) {
   const qs = params.toString();
   if (qs) target += `?${qs}`;
   return target;
+}
+
+function normalizeCompat(provider, rawPath, query) {
+  const segments = splitPath(rawPath);
+  const action = segments[0] || "";
+  const params = toSearchParams(query);
+
+  if (provider === "docs" || provider === "openapi") {
+    return { provider, action, path: action, params, transform: null, localJson: null, needDetailPath: false };
+  }
+
+  if (provider === "dramabox") {
+    if (["detail", "allepisode"].includes(action) && segments[1] && !params.get("bookId")) {
+      params.set("bookId", segments[1]);
+    }
+    if (action === "search") {
+      const queryText = params.get("query");
+      if (queryText && !params.get("keyword") && !params.get("q")) {
+        params.set("keyword", queryText);
+      }
+    }
+
+    if (action === "trending") {
+      if (!params.get("rankType")) params.set("rankType", "1");
+      return { provider, action, path: "rank", params, transform: "dramabox-list", localJson: null, needDetailPath: false };
+    }
+    if (action === "dubindo") {
+      const classify = (params.get("classify") || "terbaru").toLowerCase();
+      params.delete("classify");
+      if (classify === "terpopuler" || classify === "trending" || classify === "popular") {
+        if (!params.get("rankType")) params.set("rankType", "1");
+        return { provider, action, path: "rank", params, transform: "dramabox-list", localJson: null, needDetailPath: false };
+      }
+      if (classify === "vip") {
+        return { provider, action, path: "vip", params, transform: "dramabox-list", localJson: null, needDetailPath: false };
+      }
+      return { provider, action, path: "latest", params, transform: "dramabox-list", localJson: null, needDetailPath: false };
+    }
+    if (action === "randomdrama") {
+      return { provider, action, path: "foryou", params, transform: "dramabox-random", localJson: null, needDetailPath: false };
+    }
+    if (action === "detail") {
+      return { provider, action, path: "batch-load", params, transform: "dramabox-detail", localJson: null, needDetailPath: false };
+    }
+    if (action === "allepisode") {
+      return { provider, action, path: "batch-load", params, transform: "dramabox-episodes", localJson: null, needDetailPath: false };
+    }
+    if (action === "search") {
+      return { provider, action, path: "search", params, transform: "dramabox-search", localJson: null, needDetailPath: false };
+    }
+    if (["foryou", "latest", "vip"].includes(action)) {
+      return {
+        provider,
+        action,
+        path: action,
+        params,
+        transform: action === "vip" ? "dramabox-vip" : "dramabox-list",
+        localJson: null,
+        needDetailPath: false,
+      };
+    }
+    return { provider, action, path: action, params, transform: null, localJson: null, needDetailPath: false };
+  }
+
+  if (provider === "netshort") {
+    if (["detail", "allepisode"].includes(action) && segments[1] && !params.get("shortPlayId")) {
+      params.set("shortPlayId", segments[1]);
+    }
+    if (action === "search") {
+      const queryText = params.get("query");
+      if (queryText && !params.get("keyword") && !params.get("q")) {
+        params.set("keyword", queryText);
+      }
+    }
+
+    if (action === "foryou") {
+      const page = Math.max(1, toInt(params.get("page"), 1));
+      const limit = Math.max(1, toInt(params.get("limit"), 20));
+      params.set("offset", String((page - 1) * limit));
+      params.set("limit", String(limit));
+      return { provider, action, path: "recommend", params, transform: "netshort-foryou", localJson: null, needDetailPath: false };
+    }
+    if (action === "theaters") {
+      if (!params.get("offset")) params.set("offset", "0");
+      if (!params.get("limit")) params.set("limit", "60");
+      return { provider, action, path: "recommend", params, transform: "netshort-theaters", localJson: null, needDetailPath: false };
+    }
+    if (action === "search") {
+      return { provider, action, path: "search", params, transform: "netshort-search", localJson: null, needDetailPath: false };
+    }
+    if (action === "detail" || action === "allepisode") {
+      return { provider, action, path: "detail", params, transform: "netshort-detail", localJson: null, needDetailPath: false };
+    }
+    return { provider, action, path: action, params, transform: null, localJson: null, needDetailPath: false };
+  }
+
+  if (provider === "moviebox") {
+    if (action === "generate-link-stream-video") {
+      const input = decodeUrlSafe(one(query.url));
+      return {
+        provider,
+        action,
+        path: action,
+        params,
+        transform: null,
+        needDetailPath: false,
+        localJson: {
+          success: true,
+          url: input,
+          link: input,
+          playUrl: input,
+          downloadUrl: input,
+          streamUrl: input,
+          data: {
+            url: input,
+            link: input,
+            playUrl: input,
+            downloadUrl: input,
+            streamUrl: input,
+          },
+        },
+      };
+    }
+
+    if (["detail", "sources"].includes(action) && segments[1] && !params.get("subjectId")) {
+      params.set("subjectId", segments[1]);
+    }
+
+    if (action === "homepage") {
+      return { provider, action, path: "home", params, transform: "moviebox-identity", localJson: null, needDetailPath: false };
+    }
+    if (action === "trending") {
+      return { provider, action, path: "trending", params, transform: "moviebox-identity", localJson: null, needDetailPath: false };
+    }
+    if (action === "search") {
+      const queryText = params.get("query");
+      if (queryText && !params.get("keyword") && !params.get("q")) {
+        params.set("keyword", queryText);
+      }
+      return { provider, action, path: "everyone-search", params, transform: "moviebox-search", localJson: null, needDetailPath: false };
+    }
+    if (action === "sources") {
+      if (params.get("season") && !params.get("se")) {
+        params.set("se", params.get("season"));
+      }
+      if (params.get("episode") && !params.get("ep")) {
+        params.set("ep", params.get("episode"));
+      }
+      return { provider, action, path: "play", params, transform: "moviebox-sources", localJson: null, needDetailPath: true };
+    }
+    if (action === "detail") {
+      return { provider, action, path: "detail", params, transform: "moviebox-identity", localJson: null, needDetailPath: true };
+    }
+    return { provider, action, path: action, params, transform: null, localJson: null, needDetailPath: false };
+  }
+
+  return { provider, action, path: action, params, transform: null, localJson: null, needDetailPath: false };
+}
+
+async function fetchWorkerJson(workerBase, provider, path, params, proxySecret, reqHeaders) {
+  const url = buildTargetUrl(workerBase, provider, path, params);
+  const response = await fetch(url, {
+    method: "GET",
+    headers: {
+      "x-proxy-secret": proxySecret,
+      accept: reqHeaders.accept || "application/json",
+      "user-agent": reqHeaders["user-agent"] || "vercel-proxy",
+    },
+  });
+  if (!response.ok) return null;
+  return await response.json().catch(() => null);
+}
+
+async function resolveMovieboxDetailPath(subjectId, workerBase, proxySecret, reqHeaders) {
+  if (!subjectId) return null;
+  const cache = getMovieboxCache();
+  const cacheKey = String(subjectId);
+  if (cache.has(cacheKey)) {
+    return cache.get(cacheKey);
+  }
+
+  const probes = [
+    { path: "trending", params: new URLSearchParams({ page: "0" }) },
+    { path: "home", params: new URLSearchParams() },
+  ];
+
+  for (const probe of probes) {
+    try {
+      const payload = await fetchWorkerJson(
+        workerBase,
+        "moviebox",
+        probe.path,
+        probe.params,
+        proxySecret,
+        reqHeaders
+      );
+      if (!payload) continue;
+      rememberMovieboxFromPayload(payload);
+      if (cache.has(cacheKey)) {
+        return cache.get(cacheKey);
+      }
+    } catch {
+      // Keep probing until exhausted.
+    }
+  }
+
+  return null;
+}
+
+function applyTransform(normalized, payload) {
+  if (normalized.provider === "dramabox") {
+    return transformDramabox(normalized.transform, payload, normalized.params);
+  }
+  if (normalized.provider === "netshort") {
+    return transformNetshort(normalized.transform, payload);
+  }
+  if (normalized.provider === "moviebox") {
+    return transformMoviebox(normalized.transform, payload);
+  }
+  return payload;
 }
 
 export default async function handler(req, res) {
@@ -276,6 +589,25 @@ export default async function handler(req, res) {
     return res.status(200).json(normalized.localJson);
   }
 
+  if (
+    normalized.provider === "moviebox" &&
+    normalized.needDetailPath &&
+    !normalized.params.get("detailPath")
+  ) {
+    const subjectId = normalized.params.get("subjectId");
+    const resolvedDetailPath = await resolveMovieboxDetailPath(
+      subjectId,
+      workerBase,
+      proxySecret,
+      req.headers
+    );
+    if (resolvedDetailPath) {
+      normalized.params.set("detailPath", resolvedDetailPath);
+    } else if (subjectId) {
+      normalized.params.set("detailPath", subjectId);
+    }
+  }
+
   const target = buildTargetUrl(workerBase, provider, normalized.path, normalized.params);
 
   try {
@@ -288,13 +620,17 @@ export default async function handler(req, res) {
       },
     });
 
-    if (normalized.transform === "dramabox-random" && upstream.ok) {
-      const payload = await upstream.json().catch(() => null);
-      const picked = shuffleTake(pickArray(payload), 12);
-      return res.status(200).json({ items: picked });
+    if (!normalized.transform || !upstream.ok) {
+      return forwardResponse(upstream, res);
     }
 
-    return forwardResponse(upstream, res);
+    const payload = await upstream.clone().json().catch(() => null);
+    if (!payload) {
+      return forwardResponse(upstream, res);
+    }
+
+    const transformed = applyTransform(normalized, payload);
+    return res.status(upstream.status).json(transformed);
   } catch {
     return res.status(502).json({ error: "Bad Gateway" });
   }
