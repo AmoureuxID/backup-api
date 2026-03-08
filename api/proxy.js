@@ -752,8 +752,10 @@ function normalizeCompat(provider, rawPath, query) {
   }
 
   if (provider === "sdrama") {
-    const providerSlug = segments[0] || params.get("provider") || "";
-    const compatAction = segments[1] || "list";
+    const sdramaPath = String(rawPath || params.get("target") || params.get("path") || "");
+    const sdramaSegments = splitPath(sdramaPath);
+    const providerSlug = sdramaSegments[0] || params.get("providerSlug") || "";
+    const compatAction = sdramaSegments[1] || "list";
 
     if (!SDRAMA_PROVIDERS.has(providerSlug)) {
       return {
@@ -769,6 +771,9 @@ function normalizeCompat(provider, rawPath, query) {
       };
     }
 
+    params.delete("target");
+    params.delete("path");
+    params.delete("providerSlug");
     params.set("provider", providerSlug);
     if (!params.get("page")) params.set("page", "1");
     if (!params.get("per_page")) {
