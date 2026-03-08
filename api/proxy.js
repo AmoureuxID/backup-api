@@ -1,8 +1,35 @@
-const ALLOWED = new Set(["moviebox", "dramabox", "netshort", "docs", "openapi"]);
+const ALLOWED = new Set(["moviebox", "dramabox", "netshort", "sdrama", "docs", "openapi"]);
 const MOVIEBOX_CACHE_KEY = "__movieboxDetailPathCache";
 const MOVIEBOX_CACHE_LIMIT = 5000;
 const DRAMABOX_BATCH_SIZE = 6;
 const DRAMABOX_MAX_CHUNK_REQUESTS = 24;
+const SDRAMA_BASE = "https://api-short.stor.co.id";
+const SDRAMA_PROVIDERS = new Set([
+  "dramanow",
+  "fundrama",
+  "meloshort",
+  "rapidtv",
+  "dotdrama",
+  "dramanova",
+  "sodareels",
+  "goodshort",
+  "dramapops",
+  "hishort",
+  "microdrama",
+  "starshort",
+  "radreels",
+  "shorten",
+  "shortsky",
+  "dramadash",
+  "dramarush",
+  "dramawave",
+  "bilitv",
+  "shortbox",
+  "shotshort",
+  "flextv",
+  "vigloo",
+  "dramabite",
+]);
 if (!globalThis[MOVIEBOX_CACHE_KEY]) {
   globalThis[MOVIEBOX_CACHE_KEY] = new Map();
 }
@@ -403,6 +430,195 @@ function transformMoviebox(transform, payload) {
   return payload;
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function titleCase(value) {
+  return String(value || "")
+    .split(/[-_\s]+/)
+    .filter(Boolean)
+    .map((segment) => segment.charAt(0).toUpperCase() + segment.slice(1))
+    .join(" ");
+}
+
+function sortSDramaEpisodes(episodes) {
+  return [...asArray(episodes)].sort((left, right) => {
+    const leftIndex = toInt(left?.episode_index, 0);
+    const rightIndex = toInt(right?.episode_index, 0);
+    return leftIndex - rightIndex;
+  });
+}
+
+function normalizeSDramaItem(item) {
+  const raw = item?.raw_data && typeof item.raw_data === "object" ? item.raw_data : {};
+  return {
+    ...item,
+    id: Number(item?.id || 0),
+    external_id: String(item?.external_id || raw?.book_id || ""),
+    title: item?.title || raw?.title || "",
+    cover_url: item?.cover_url || raw?.cover || "",
+    introduction: item?.introduction || "",
+    chapter_count: Number(item?.chapter_count || 0),
+    provider_slug: item?.provider_slug || "",
+    provider_name: item?.provider_name || titleCase(item?.provider_slug || ""),
+    play_count: Number(item?.play_count || 0),
+    is_dubbed: Boolean(item?.is_dubbed),
+    raw_data: raw,
+  };
+}
+
+function normalizeSDramaEpisode(episode) {
+  const qualities =
+    episode?.qualities && typeof episode.qualities === "object" && !Array.isArray(episode.qualities)
+      ? episode.qualities
+      : null;
+  const qualityEntries = qualities
+    ? Object.entries(qualities).filter(([, value]) => typeof value === "string" && value.length > 0)
+    : [];
+  const defaultUrl =
+    (typeof episode?.video_url === "string" && episode.video_url) ||
+    qualityEntries[0]?.[1] ||
+    "";
+  const subtitles = asArray(episode?.subtitles).filter(
+    (item) => item && typeof item.url === "string" && typeof item.lang === "string"
+  );
+
+  return {
+    ...episode,
+    id: String(episode?.id || episode?.external_id || episode?.episode_index || ""),
+    episode_index: Number(episode?.episode_index || 0),
+    episode_name: episode?.episode_name || `Episode ${Number(episode?.episode_index || 0)}`,
+    video_url: defaultUrl,
+    subtitle_url:
+      (typeof episode?.subtitle_url === "string" && episode.subtitle_url) ||
+      subtitles[0]?.url ||
+      "",
+    subtitles,
+    qualities,
+    status: episode?.status || "",
+    released_at: episode?.released_at || null,
+    created_at: episode?.created_at || null,
+    is_playable: Boolean(defaultUrl),
+  };
+}
+
+function transformSDrama(transform, payload, normalized) {
+  const providerSlug = normalized?.providerSlug || "";
+  const providerName = titleCase(providerSlug);
+
+  if (["sdrama-list", "sdrama-popular", "sdrama-search"].includes(transform)) {
+    const items = asArray(payload?.data).map((item) => normalizeSDramaItem(item));
+    return {
+      success: true,
+      items,
+      data: items,
+      meta: payload?.meta || {
+        page: 1,
+        per_page: items.length,
+        total: items.length,
+        total_pages: 1,
+      },
+      provider: {
+        slug: providerSlug,
+        name: items[0]?.provider_name || providerName,
+      },
+    };
+  }
+
+  if (transform === "sdrama-detail") {
+    const root = payload?.data || {};
+    const drama = normalizeSDramaItem(root?.drama || {});
+    const episodes = sortSDramaEpisodes(asArray(root?.episodes).map((episode) => normalizeSDramaEpisode(episode)));
+    const playableEpisodes = episodes.filter((episode) => episode?.is_playable);
+    return {
+      success: true,
+      drama,
+      tags: asArray(root?.tags),
+      episodes,
+      playableEpisodes,
+      totalEpisodes: episodes.length || drama.chapter_count || 0,
+      publishedEpisodeCount: playableEpisodes.length,
+      firstPlayableEpisode: playableEpisodes[0] || null,
+    };
+  }
+
+  if (transform === "sdrama-episodes") {
+    const episodes = sortSDramaEpisodes(asArray(payload?.data).map((episode) => normalizeSDramaEpisode(episode)));
+    return {
+      success: true,
+      episodes,
+      data: episodes,
+      playableEpisodes: episodes.filter((episode) => episode?.is_playable),
+      meta: payload?.meta || {
+        page: 1,
+        per_page: episodes.length,
+        total: episodes.length,
+        total_pages: 1,
+      },
+      provider: {
+        slug: providerSlug,
+        name: providerName,
+      },
+    };
+  }
+
+  return payload;
+}
+
+function buildSDramaUrl(normalized) {
+  const url = new URL(SDRAMA_BASE);
+
+  if (normalized.action === "list") {
+    url.pathname = "/api/dramas";
+  } else if (normalized.action === "popular") {
+    url.pathname = "/api/dramas/popular";
+  } else if (normalized.action === "search") {
+    url.pathname = "/api/search";
+  } else if (normalized.action === "detail") {
+    url.pathname = `/api/dramas/${encodeURIComponent(normalized.params.get("id") || "")}`;
+  } else if (normalized.action === "episodes") {
+    url.pathname = `/api/dramas/${encodeURIComponent(normalized.params.get("id") || "")}/episodes`;
+  } else {
+    url.pathname = "/api/dramas";
+  }
+
+  normalized.params.forEach((value, key) => {
+    if (key === "id") return;
+    url.searchParams.set(key, value);
+  });
+
+  return url;
+}
+
+async function fetchSDramaPayload(normalized) {
+  const upstreamUrl = buildSDramaUrl(normalized);
+  let lastResponse = null;
+
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const response = await fetch(upstreamUrl.toString(), {
+      method: "GET",
+      headers: {
+        accept: "application/json",
+        "user-agent": "terasdracin-vercel-proxy",
+      },
+      redirect: "follow",
+    });
+
+    if (response.status !== 429) {
+      const payload = response.ok ? await response.clone().json().catch(() => null) : null;
+      return { upstream: response, payload };
+    }
+
+    lastResponse = response;
+    const retryAfter = Number.parseInt(response.headers.get("retry-after") || "", 10);
+    const waitMs = Number.isFinite(retryAfter) ? retryAfter * 1000 : Math.pow(2, attempt) * 1000;
+    await sleep(waitMs);
+  }
+
+  return { upstream: lastResponse, payload: null };
+}
+
 function setCors(res, req) {
   const origin = req.headers.origin || "https://www.terasdracin.my.id";
   res.setHeader("Access-Control-Allow-Origin", origin);
@@ -533,6 +749,58 @@ function normalizeCompat(provider, rawPath, query) {
       return { provider, action, path: "detail", params, transform: "netshort-detail", localJson: null, needDetailPath: false };
     }
     return { provider, action, path: action, params, transform: null, localJson: null, needDetailPath: false };
+  }
+
+  if (provider === "sdrama") {
+    const providerSlug = segments[0] || params.get("provider") || "";
+    const compatAction = segments[1] || "list";
+
+    if (!SDRAMA_PROVIDERS.has(providerSlug)) {
+      return {
+        provider,
+        action: compatAction,
+        path: compatAction,
+        params,
+        transform: null,
+        localJson: null,
+        needDetailPath: false,
+        invalidStatus: 404,
+        invalidMessage: "SDrama provider not found",
+      };
+    }
+
+    params.set("provider", providerSlug);
+    if (!params.get("page")) params.set("page", "1");
+    if (!params.get("per_page")) {
+      params.set("per_page", compatAction === "search" ? "12" : "24");
+    }
+
+    if (compatAction === "search") {
+      const queryText = params.get("query");
+      if (queryText && !params.get("q")) {
+        params.set("q", queryText);
+      }
+    }
+
+    return {
+      provider,
+      action: compatAction,
+      path: compatAction,
+      params,
+      transform:
+        compatAction === "popular"
+          ? "sdrama-popular"
+          : compatAction === "search"
+            ? "sdrama-search"
+            : compatAction === "detail"
+              ? "sdrama-detail"
+              : compatAction === "episodes"
+                ? "sdrama-episodes"
+                : "sdrama-list",
+      localJson: null,
+      needDetailPath: false,
+      providerSlug,
+    };
   }
 
   if (provider === "moviebox") {
@@ -841,6 +1109,9 @@ function applyTransform(normalized, payload) {
   if (normalized.provider === "moviebox") {
     return transformMoviebox(normalized.transform, payload);
   }
+  if (normalized.provider === "sdrama") {
+    return transformSDrama(normalized.transform, payload, normalized);
+  }
   return payload;
 }
 
@@ -929,17 +1200,21 @@ export default async function handler(req, res) {
     return res.status(404).json({ error: "Provider not found" });
   }
 
-  const workerBase = process.env.WORKER_BASE_URL;
-  const proxySecret = process.env.PROXY_SECRET;
-  if (!workerBase || !proxySecret) {
-    return res.status(500).json({ error: "Missing WORKER_BASE_URL or PROXY_SECRET" });
-  }
-
   const rawPath = pathValue(req.query.path);
   const normalized = normalizeCompat(provider, rawPath, req.query);
 
+  if (normalized.invalidStatus) {
+    return res.status(normalized.invalidStatus).json({ error: normalized.invalidMessage || "Invalid request" });
+  }
+
   if (normalized.localJson) {
-    return res.status(200).json(normalized.localJson);
+    return res.status(normalized.localStatus || 200).json(normalized.localJson);
+  }
+
+  const workerBase = process.env.WORKER_BASE_URL;
+  const proxySecret = process.env.PROXY_SECRET;
+  if (provider !== "sdrama" && (!workerBase || !proxySecret)) {
+    return res.status(500).json({ error: "Missing WORKER_BASE_URL or PROXY_SECRET" });
   }
 
   if (
@@ -977,17 +1252,38 @@ export default async function handler(req, res) {
 
   try {
     const result =
-      normalized.provider === "dramabox" &&
-      normalized.action === "trending" &&
-      !normalized.params.get("rankType")
-        ? await fetchMergedDramaboxTrending(workerBase, proxySecret, req.headers, normalized)
-        : await fetchNormalizedPayload(workerBase, proxySecret, req.headers, normalized, req.method);
+      normalized.provider === "sdrama"
+        ? {
+            ...(await fetchSDramaPayload(normalized)),
+            transformed: null,
+          }
+        : normalized.provider === "dramabox" &&
+            normalized.action === "trending" &&
+            !normalized.params.get("rankType")
+          ? await fetchMergedDramaboxTrending(workerBase, proxySecret, req.headers, normalized)
+          : await fetchNormalizedPayload(workerBase, proxySecret, req.headers, normalized, req.method);
 
     const { upstream, payload, transformed } = result;
 
-      if (!normalized.transform || !upstream.ok) {
-        return forwardResponse(upstream, res, req.method);
+    if (normalized.provider === "sdrama") {
+      if (!upstream?.ok || !payload) {
+        const message =
+          (await upstream?.text?.().catch(() => null)) ||
+          "Upstream SDrama error";
+        return res.status(upstream?.status || 502).json({ error: message });
       }
+
+      const cacheControl =
+        normalized.action === "detail" || normalized.action === "episodes"
+          ? "public, s-maxage=600, stale-while-revalidate=900"
+          : "public, s-maxage=300, stale-while-revalidate=600";
+      res.setHeader("Cache-Control", cacheControl);
+      return res.status(upstream.status).json(applyTransform(normalized, payload));
+    }
+
+    if (!normalized.transform || !upstream.ok) {
+      return forwardResponse(upstream, res, req.method);
+    }
 
     if (!payload) {
       if (transformed !== null) {

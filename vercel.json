@@ -26,6 +26,10 @@
       "destination": "/api/proxy?provider=netshort&path=:path*"
     },
     {
+      "source": "/sdrama/:path*",
+      "destination": "/api/proxy?provider=sdrama&path=:path*"
+    },
+    {
       "source": "/docs",
       "destination": "/api/proxy?provider=docs"
     },
