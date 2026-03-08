@@ -1252,12 +1252,7 @@ export default async function handler(req, res) {
 
   try {
     const result =
-      normalized.provider === "sdrama"
-        ? {
-            ...(await fetchSDramaPayload(normalized)),
-            transformed: null,
-          }
-        : normalized.provider === "dramabox" &&
+      normalized.provider === "dramabox" &&
             normalized.action === "trending" &&
             !normalized.params.get("rankType")
           ? await fetchMergedDramaboxTrending(workerBase, proxySecret, req.headers, normalized)
@@ -1266,14 +1261,23 @@ export default async function handler(req, res) {
     const { upstream, payload, transformed } = result;
 
     if (normalized.provider === "sdrama") {
-      if (!upstream?.ok || !payload) {
-        const message =
-          (await upstream?.text?.().catch(() => null)) ||
-          "Upstream SDrama error";
-        return res.status(upstream?.status || 502).json({ error: message });
-      }
+        if (!upstream?.ok) {
+          const errorPayload = await upstream.clone().json().catch(() => null);
+          if (errorPayload && typeof errorPayload === "object") {
+            return res.status(upstream.status).json(errorPayload);
+          }
 
-      const cacheControl =
+          const message =
+            (await upstream.text().catch(() => null)) ||
+            "Upstream SDrama error";
+          return res.status(upstream.status || 502).json({ error: message });
+        }
+
+        if (!payload) {
+          return res.status(upstream?.status || 502).json({ error: "SDrama payload kosong." });
+        }
+
+        const cacheControl =
         normalized.action === "detail" || normalized.action === "episodes"
           ? "public, s-maxage=600, stale-while-revalidate=900"
           : "public, s-maxage=300, stale-while-revalidate=600";
