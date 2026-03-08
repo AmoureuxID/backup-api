@@ -1200,7 +1200,7 @@ export default async function handler(req, res) {
     return res.status(404).json({ error: "Provider not found" });
   }
 
-  const rawPath = pathValue(req.query.path);
+  const rawPath = pathValue(req.query.path || req.query.target);
   const normalized = normalizeCompat(provider, rawPath, req.query);
 
   if (normalized.invalidStatus) {
