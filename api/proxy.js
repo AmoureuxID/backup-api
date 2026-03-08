@@ -339,12 +339,25 @@ function transformMoviebox(transform, payload) {
   rememberMovieboxFromPayload(payload);
 
   if (transform === "moviebox-search") {
-    const searchList = asArray(payload?.data?.everyoneSearch);
+    const data = payload?.data ?? {};
+    const searchList = asArray(
+      data.items ||
+      data.subjectList ||
+      data.everyoneSearch ||
+      payload?.items ||
+      payload?.subjectList
+    ).filter((item) => {
+      const subjectType = Number(item?.subjectType ?? item?.subject?.subjectType ?? 0);
+      return !subjectType || subjectType === 1 || subjectType === 2;
+    });
     return {
+      data,
       subjectList: searchList,
       items: searchList,
       list: searchList,
       results: searchList,
+      pager: data?.pager || payload?.pager || null,
+      counts: asArray(data?.counts),
     };
   }
 
@@ -566,7 +579,16 @@ function normalizeCompat(provider, rawPath, query) {
       if (queryText && !params.get("keyword") && !params.get("q")) {
         params.set("keyword", queryText);
       }
-      return { provider, action, path: "everyone-search", params, transform: "moviebox-search", localJson: null, needDetailPath: false };
+      if (!params.get("page")) params.set("page", "1");
+      if (!params.get("perPage")) params.set("perPage", "20");
+      return { provider, action, path: "search", params, transform: "moviebox-search", localJson: null, needDetailPath: false };
+    }
+    if (action === "search-suggest") {
+      const queryText = params.get("query");
+      if (queryText && !params.get("keyword") && !params.get("q")) {
+        params.set("keyword", queryText);
+      }
+      return { provider, action, path: "search-suggest", params, transform: "moviebox-identity", localJson: null, needDetailPath: false };
     }
     if (action === "sources") {
       if (params.get("season") && !params.get("se")) {
@@ -575,10 +597,10 @@ function normalizeCompat(provider, rawPath, query) {
       if (params.get("episode") && !params.get("ep")) {
         params.set("ep", params.get("episode"));
       }
-      return { provider, action, path: "play", params, transform: "moviebox-sources", localJson: null, needDetailPath: true };
+      return { provider, action, path: "play", params, transform: "moviebox-sources", localJson: null, needDetailPath: false };
     }
     if (action === "detail") {
-      return { provider, action, path: "detail", params, transform: "moviebox-identity", localJson: null, needDetailPath: true };
+      return { provider, action, path: "detail", params, transform: "moviebox-identity", localJson: null, needDetailPath: false };
     }
     return { provider, action, path: action, params, transform: null, localJson: null, needDetailPath: false };
   }
