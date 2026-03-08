@@ -407,18 +407,17 @@ function setCors(res, req) {
   const origin = req.headers.origin || "https://www.terasdracin.my.id";
   res.setHeader("Access-Control-Allow-Origin", origin);
   res.setHeader("Vary", "Origin");
-  res.setHeader("Access-Control-Allow-Methods", "GET,OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Accept");
+  res.setHeader("Access-Control-Allow-Methods", "GET,HEAD,OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Accept, Range, If-Range");
 }
 
-async function forwardResponse(upstream, res) {
-  const body = Buffer.from(await upstream.arrayBuffer());
+async function forwardResponse(upstream, res, method = "GET") {
+  const body = method === "HEAD" ? null : Buffer.from(await upstream.arrayBuffer());
   res.status(upstream.status);
   upstream.headers.forEach((value, key) => {
     const lower = key.toLowerCase();
     if (
       lower === "transfer-encoding" ||
-      lower === "content-length" ||
       lower === "content-encoding"
     ) {
       return;
@@ -562,6 +561,10 @@ function normalizeCompat(provider, rawPath, query) {
           },
         },
       };
+    }
+
+    if (action === "stream") {
+      return { provider, action, path: "stream", params, transform: null, localJson: null, needDetailPath: false };
     }
 
     if (["detail", "sources"].includes(action) && segments[1] && !params.get("subjectId")) {
@@ -841,14 +844,19 @@ function applyTransform(normalized, payload) {
   return payload;
 }
 
-async function fetchNormalizedPayload(workerBase, proxySecret, reqHeaders, normalized) {
+async function fetchNormalizedPayload(workerBase, proxySecret, reqHeaders, normalized, method = "GET") {
   const target = buildTargetUrl(workerBase, normalized.provider, normalized.path, normalized.params);
   const upstream = await fetch(target, {
-    method: "GET",
+    method,
     headers: {
       "x-proxy-secret": proxySecret,
       accept: reqHeaders.accept || "application/json",
       "user-agent": reqHeaders["user-agent"] || "vercel-proxy",
+      ...(reqHeaders.range ? { range: reqHeaders.range } : {}),
+      ...(reqHeaders["if-range"] ? { "if-range": reqHeaders["if-range"] } : {}),
+      ...(reqHeaders["accept-language"] ? { "accept-language": reqHeaders["accept-language"] } : {}),
+      ...(reqHeaders["accept-encoding"] ? { "accept-encoding": reqHeaders["accept-encoding"] } : {}),
+      ...(reqHeaders["cache-control"] ? { "cache-control": reqHeaders["cache-control"] } : {}),
     },
   });
 
@@ -877,7 +885,7 @@ async function fetchMergedDramaboxTrending(workerBase, proxySecret, reqHeaders, 
       return fetchNormalizedPayload(workerBase, proxySecret, reqHeaders, {
         ...normalized,
         params,
-      });
+      }, "GET");
     })
   );
 
@@ -912,7 +920,7 @@ export default async function handler(req, res) {
     return res.status(204).end();
   }
 
-  if (req.method !== "GET") {
+  if (req.method !== "GET" && req.method !== "HEAD") {
     return res.status(405).json({ error: "Method Not Allowed" });
   }
 
@@ -973,19 +981,19 @@ export default async function handler(req, res) {
       normalized.action === "trending" &&
       !normalized.params.get("rankType")
         ? await fetchMergedDramaboxTrending(workerBase, proxySecret, req.headers, normalized)
-        : await fetchNormalizedPayload(workerBase, proxySecret, req.headers, normalized);
+        : await fetchNormalizedPayload(workerBase, proxySecret, req.headers, normalized, req.method);
 
     const { upstream, payload, transformed } = result;
 
-    if (!normalized.transform || !upstream.ok) {
-      return forwardResponse(upstream, res);
-    }
+      if (!normalized.transform || !upstream.ok) {
+        return forwardResponse(upstream, res, req.method);
+      }
 
     if (!payload) {
       if (transformed !== null) {
         return res.status(upstream.status).json(transformed);
       }
-      return forwardResponse(upstream, res);
+      return forwardResponse(upstream, res, req.method);
     }
 
     return res.status(upstream.status).json(transformed);
