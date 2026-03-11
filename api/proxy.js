@@ -1212,7 +1212,7 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: "Method Not Allowed" });
   }
 
-  const provider = one(req.query.provider);
+  const provider = one(req.query.proxyProvider) || one(req.query.provider);
   if (!ALLOWED.has(provider)) {
     return res.status(404).json({ error: "Provider not found" });
   }

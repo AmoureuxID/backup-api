@@ -3,11 +3,11 @@
   "rewrites": [
     {
       "source": "/app",
-      "destination": "/api/proxy?provider=app"
+      "destination": "/api/proxy?proxyProvider=app"
     },
     {
       "source": "/app/:path*",
-      "destination": "/api/proxy?provider=app&path=:path*"
+      "destination": "/api/proxy?proxyProvider=app&path=:path*"
     },
     {
       "source": "/comic/:path*",
