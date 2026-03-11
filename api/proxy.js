@@ -60,13 +60,21 @@ function asArray(value) {
   return [];
 }
 
-function toSearchParams(query) {
+function toSearchParams(query, options = {}) {
+  const preserveProvider = Boolean(options.preserveProvider);
   const sp = new URLSearchParams();
   for (const [k, v] of Object.entries(query)) {
-    if (k === "provider" || k === "path") continue;
+    if (k === "path") continue;
+    if (k === "provider" && !preserveProvider) continue;
+
     if (Array.isArray(v)) {
-      for (const item of v) sp.append(k, String(item));
+      const values =
+        k === "provider" && preserveProvider
+          ? v.filter((item) => String(item) !== "app")
+          : v;
+      for (const item of values) sp.append(k, String(item));
     } else if (v !== undefined) {
+      if (k === "provider" && preserveProvider && String(v) === "app") continue;
       sp.append(k, String(v));
     }
   }
@@ -661,7 +669,7 @@ function buildTargetUrl(workerBase, provider, path, params) {
 function normalizeCompat(provider, rawPath, query) {
   const segments = splitPath(rawPath);
   const action = segments[0] || "";
-  const params = toSearchParams(query);
+  const params = toSearchParams(query, { preserveProvider: provider === "app" });
 
   if (provider === "docs" || provider === "openapi") {
     return { provider, action, path: action, params, transform: null, localJson: null, needDetailPath: false };
