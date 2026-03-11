@@ -102,6 +102,16 @@ function randomId() {
   return `dbx-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
+function firstHeaderValue(value) {
+  if (Array.isArray(value)) return String(value[0] || "").trim();
+  if (typeof value === "string") return value.trim();
+  return "";
+}
+
+function resolveRequestId(req) {
+  return firstHeaderValue(req?.headers?.["x-request-id"]) || randomId();
+}
+
 function dedupeBy(items, keyFn) {
   const out = [];
   const seen = new Set();
@@ -632,7 +642,22 @@ function setCors(res, req) {
   res.setHeader("Access-Control-Allow-Origin", origin);
   res.setHeader("Vary", "Origin");
   res.setHeader("Access-Control-Allow-Methods", "GET,HEAD,OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Accept, Range, If-Range");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Accept, Range, If-Range, X-Request-Id");
+  res.setHeader("Access-Control-Expose-Headers", "x-request-id");
+}
+
+function buildWorkerRequestHeaders(proxySecret, reqHeaders, requestId) {
+  return {
+    "x-proxy-secret": proxySecret,
+    "x-request-id": requestId,
+    accept: reqHeaders.accept || "application/json",
+    "user-agent": reqHeaders["user-agent"] || "vercel-proxy",
+    ...(reqHeaders.range ? { range: reqHeaders.range } : {}),
+    ...(reqHeaders["if-range"] ? { "if-range": reqHeaders["if-range"] } : {}),
+    ...(reqHeaders["accept-language"] ? { "accept-language": reqHeaders["accept-language"] } : {}),
+    ...(reqHeaders["accept-encoding"] ? { "accept-encoding": reqHeaders["accept-encoding"] } : {}),
+    ...(reqHeaders["cache-control"] ? { "cache-control": reqHeaders["cache-control"] } : {}),
+  };
 }
 
 async function forwardResponse(upstream, res, method = "GET") {
@@ -896,15 +921,11 @@ function normalizeCompat(provider, rawPath, query) {
   return { provider, action, path: action, params, transform: null, localJson: null, needDetailPath: false };
 }
 
-async function fetchWorkerJson(workerBase, provider, path, params, proxySecret, reqHeaders) {
+async function fetchWorkerJson(workerBase, provider, path, params, proxySecret, reqHeaders, requestId) {
   const url = buildTargetUrl(workerBase, provider, path, params);
   const response = await fetch(url, {
     method: "GET",
-    headers: {
-      "x-proxy-secret": proxySecret,
-      accept: reqHeaders.accept || "application/json",
-      "user-agent": reqHeaders["user-agent"] || "vercel-proxy",
-    },
+    headers: buildWorkerRequestHeaders(proxySecret, reqHeaders, requestId),
   });
   if (!response.ok) return null;
   return await response.json().catch(() => null);
@@ -945,7 +966,7 @@ function enrichDramaboxBatchParams(params, detailPayload) {
   return nextParams;
 }
 
-async function fetchAggregatedDramaboxPayload(workerBase, params, proxySecret, reqHeaders) {
+async function fetchAggregatedDramaboxPayload(workerBase, params, proxySecret, reqHeaders, requestId) {
   const baseParams = new URLSearchParams(params);
   const initialParams = new URLSearchParams(baseParams);
   initialParams.set("index", "1");
@@ -958,7 +979,8 @@ async function fetchAggregatedDramaboxPayload(workerBase, params, proxySecret, r
     "batch-load",
     initialParams,
     proxySecret,
-    reqHeaders
+    reqHeaders,
+    requestId
   );
 
   if (!firstPayload?.data || typeof firstPayload.data !== "object") {
@@ -992,7 +1014,8 @@ async function fetchAggregatedDramaboxPayload(workerBase, params, proxySecret, r
       "batch-load",
       chunkParams,
       proxySecret,
-      reqHeaders
+      reqHeaders,
+      requestId
     );
 
     requests += 1;
@@ -1025,14 +1048,15 @@ async function fetchAggregatedDramaboxPayload(workerBase, params, proxySecret, r
   return mergedPayload;
 }
 
-async function buildDramaboxEpisodesPayload(workerBase, params, proxySecret, reqHeaders) {
+async function buildDramaboxEpisodesPayload(workerBase, params, proxySecret, reqHeaders, requestId) {
   const detailPayload = await fetchWorkerJson(
     workerBase,
     "dramabox",
     "detail",
     params,
     proxySecret,
-    reqHeaders
+    reqHeaders,
+    requestId
   );
 
   if (!detailPayload?.data || typeof detailPayload.data !== "object") {
@@ -1045,7 +1069,8 @@ async function buildDramaboxEpisodesPayload(workerBase, params, proxySecret, req
     workerBase,
     playbackParams,
     proxySecret,
-    reqHeaders
+    reqHeaders,
+    requestId
   );
   const playableEpisodes = playablePayload ? extractDramaboxEpisodes(playablePayload) : [];
 
@@ -1080,7 +1105,7 @@ async function buildDramaboxEpisodesPayload(workerBase, params, proxySecret, req
   return mergedPayload;
 }
 
-async function resolveMovieboxDetailPath(subjectId, workerBase, proxySecret, reqHeaders) {
+async function resolveMovieboxDetailPath(subjectId, workerBase, proxySecret, reqHeaders, requestId) {
   if (!subjectId) return null;
   const cache = getMovieboxCache();
   const cacheKey = String(subjectId);
@@ -1101,7 +1126,8 @@ async function resolveMovieboxDetailPath(subjectId, workerBase, proxySecret, req
         probe.path,
         probe.params,
         proxySecret,
-        reqHeaders
+        reqHeaders,
+        requestId
       );
       if (!payload) continue;
       rememberMovieboxFromPayload(payload);
@@ -1132,20 +1158,11 @@ function applyTransform(normalized, payload) {
   return payload;
 }
 
-async function fetchNormalizedPayload(workerBase, proxySecret, reqHeaders, normalized, method = "GET") {
+async function fetchNormalizedPayload(workerBase, proxySecret, reqHeaders, normalized, requestId, method = "GET") {
   const target = buildTargetUrl(workerBase, normalized.provider, normalized.path, normalized.params);
   const upstream = await fetch(target, {
     method,
-    headers: {
-      "x-proxy-secret": proxySecret,
-      accept: reqHeaders.accept || "application/json",
-      "user-agent": reqHeaders["user-agent"] || "vercel-proxy",
-      ...(reqHeaders.range ? { range: reqHeaders.range } : {}),
-      ...(reqHeaders["if-range"] ? { "if-range": reqHeaders["if-range"] } : {}),
-      ...(reqHeaders["accept-language"] ? { "accept-language": reqHeaders["accept-language"] } : {}),
-      ...(reqHeaders["accept-encoding"] ? { "accept-encoding": reqHeaders["accept-encoding"] } : {}),
-      ...(reqHeaders["cache-control"] ? { "cache-control": reqHeaders["cache-control"] } : {}),
-    },
+    headers: buildWorkerRequestHeaders(proxySecret, reqHeaders, requestId),
   });
 
   if (!normalized.transform || !upstream.ok) {
@@ -1164,7 +1181,7 @@ async function fetchNormalizedPayload(workerBase, proxySecret, reqHeaders, norma
   };
 }
 
-async function fetchMergedDramaboxTrending(workerBase, proxySecret, reqHeaders, normalized) {
+async function fetchMergedDramaboxTrending(workerBase, proxySecret, reqHeaders, normalized, requestId) {
   const rankTypes = ["1", "2", "3"];
   const results = await Promise.all(
     rankTypes.map(async (rankType) => {
@@ -1173,7 +1190,7 @@ async function fetchMergedDramaboxTrending(workerBase, proxySecret, reqHeaders, 
       return fetchNormalizedPayload(workerBase, proxySecret, reqHeaders, {
         ...normalized,
         params,
-      }, "GET");
+      }, requestId, "GET");
     })
   );
 
@@ -1203,6 +1220,8 @@ async function fetchMergedDramaboxTrending(workerBase, proxySecret, reqHeaders, 
 
 export default async function handler(req, res) {
   setCors(res, req);
+  const requestId = resolveRequestId(req);
+  res.setHeader("x-request-id", requestId);
 
   if (req.method === "OPTIONS") {
     return res.status(204).end();
@@ -1244,7 +1263,8 @@ export default async function handler(req, res) {
       subjectId,
       workerBase,
       proxySecret,
-      req.headers
+      req.headers,
+      requestId
     );
     if (resolvedDetailPath) {
       normalized.params.set("detailPath", resolvedDetailPath);
@@ -1258,7 +1278,8 @@ export default async function handler(req, res) {
       workerBase,
       normalized.params,
       proxySecret,
-      req.headers
+      req.headers,
+      requestId
     );
 
     if (episodePayload) {
@@ -1269,11 +1290,11 @@ export default async function handler(req, res) {
 
   try {
     const result =
-      normalized.provider === "dramabox" &&
+            normalized.provider === "dramabox" &&
             normalized.action === "trending" &&
             !normalized.params.get("rankType")
-          ? await fetchMergedDramaboxTrending(workerBase, proxySecret, req.headers, normalized)
-          : await fetchNormalizedPayload(workerBase, proxySecret, req.headers, normalized, req.method);
+          ? await fetchMergedDramaboxTrending(workerBase, proxySecret, req.headers, normalized, requestId)
+          : await fetchNormalizedPayload(workerBase, proxySecret, req.headers, normalized, requestId, req.method);
 
     const { upstream, payload, transformed } = result;
 
