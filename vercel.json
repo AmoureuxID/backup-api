@@ -2,6 +2,14 @@
   "version": 2,
   "rewrites": [
     {
+      "source": "/app",
+      "destination": "/api/proxy?provider=app"
+    },
+    {
+      "source": "/app/:path*",
+      "destination": "/api/proxy?provider=app&path=:path*"
+    },
+    {
       "source": "/comic/:path*",
       "destination": "https://www.sankavollerei.com/comic/:path*"
     },
