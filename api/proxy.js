@@ -652,6 +652,7 @@ function buildWorkerRequestHeaders(proxySecret, reqHeaders, requestId) {
     "x-request-id": requestId,
     accept: reqHeaders.accept || "application/json",
     "user-agent": reqHeaders["user-agent"] || "vercel-proxy",
+    ...(reqHeaders["x-debug-fetch"] ? { "x-debug-fetch": reqHeaders["x-debug-fetch"] } : {}),
     ...(reqHeaders.range ? { range: reqHeaders.range } : {}),
     ...(reqHeaders["if-range"] ? { "if-range": reqHeaders["if-range"] } : {}),
     ...(reqHeaders["accept-language"] ? { "accept-language": reqHeaders["accept-language"] } : {}),
