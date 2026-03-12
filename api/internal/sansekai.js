@@ -10,18 +10,6 @@ const ALLOWED_SANSEKAI_PROVIDERS = new Set([
 ]);
 
 const SANSEKAI_API_BASE = "https://api.sansekai.my.id/api";
-const HOP_BY_HOP_HEADERS = new Set([
-  "connection",
-  "content-length",
-  "keep-alive",
-  "proxy-authenticate",
-  "proxy-authorization",
-  "te",
-  "trailer",
-  "transfer-encoding",
-  "upgrade",
-]);
-
 function one(value, fallback = "") {
   if (Array.isArray(value)) return value[0] ?? fallback;
   return value ?? fallback;
@@ -86,14 +74,6 @@ function getCacheControl(kind, path) {
     return "public, s-maxage=120, stale-while-revalidate=300";
   }
   return "public, s-maxage=45, stale-while-revalidate=120";
-}
-
-function copyResponseHeaders(res, upstream) {
-  for (const [key, value] of upstream.headers.entries()) {
-    if (HOP_BY_HOP_HEADERS.has(key.toLowerCase())) continue;
-    if (key.toLowerCase() === "cache-control") continue;
-    res.setHeader(key, value);
-  }
 }
 
 function shouldRetryStatus(status) {
@@ -175,7 +155,10 @@ export default async function handler(req, res) {
       redirect: "follow",
     }, 2);
 
-    copyResponseHeaders(res, upstream);
+    const contentType = upstream.headers.get("content-type");
+    if (contentType) {
+      res.setHeader("content-type", contentType);
+    }
     res.setHeader("Cache-Control", cacheControl);
     res.setHeader("x-bridge-upstream-status", String(upstream.status));
     res.setHeader("x-bridge-provider", provider);
@@ -185,8 +168,8 @@ export default async function handler(req, res) {
       return res.status(upstream.status).end();
     }
 
-    const buffer = Buffer.from(await upstream.arrayBuffer());
-    return res.status(upstream.status).send(buffer);
+    const bodyText = await upstream.text();
+    return res.status(upstream.status).send(bodyText);
   } catch (error) {
     return res.status(502).json({
       error: "Sansekai bridge transport failure",
