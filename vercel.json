@@ -19,7 +19,19 @@
     },
     {
       "source": "/anime/:path*",
-      "destination": "https://www.sankavollerei.com/anime/:path*"
+      "destination": "/api/proxy?provider=anime&path=:path*"
+    },
+    {
+      "source": "/komik/:path*",
+      "destination": "/api/proxy?provider=komik&path=:path*"
+    },
+    {
+      "source": "/dracin/:path*",
+      "destination": "/api/proxy?provider=dracin&path=:path*"
+    },
+    {
+      "source": "/film/:path*",
+      "destination": "/api/proxy?provider=film&path=:path*"
     },
     {
       "source": "/moviebox/:path*",

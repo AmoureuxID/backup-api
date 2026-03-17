@@ -1,4 +1,16 @@
-const ALLOWED = new Set(["app", "moviebox", "dramabox", "netshort", "sdrama", "docs", "openapi"]);
+const ALLOWED = new Set([
+  "app",
+  "moviebox",
+  "dramabox",
+  "netshort",
+  "sdrama",
+  "dracin",
+  "film",
+  "anime",
+  "komik",
+  "docs",
+  "openapi",
+]);
 const MOVIEBOX_CACHE_KEY = "__movieboxDetailPathCache";
 const MOVIEBOX_CACHE_LIMIT = 5000;
 const DRAMABOX_BATCH_SIZE = 6;
@@ -702,6 +714,10 @@ function normalizeCompat(provider, rawPath, query) {
   }
 
   if (provider === "app") {
+    return { provider, action, path: rawPath, params, transform: null, localJson: null, needDetailPath: false };
+  }
+
+  if (provider === "dracin" || provider === "film" || provider === "anime" || provider === "komik") {
     return { provider, action, path: rawPath, params, transform: null, localJson: null, needDetailPath: false };
   }
 
