@@ -2,6 +2,34 @@
   "version": 2,
   "rewrites": [
     {
+      "source": "/api/home",
+      "destination": "https://be-teras-sports.rizkimgrms.workers.dev/api/home"
+    },
+    {
+      "source": "/api/live",
+      "destination": "https://be-teras-sports.rizkimgrms.workers.dev/api/live"
+    },
+    {
+      "source": "/api/matches",
+      "destination": "https://be-teras-sports.rizkimgrms.workers.dev/api/matches"
+    },
+    {
+      "source": "/api/leagues",
+      "destination": "https://be-teras-sports.rizkimgrms.workers.dev/api/leagues"
+    },
+    {
+      "source": "/api/leagues/:path*",
+      "destination": "https://be-teras-sports.rizkimgrms.workers.dev/api/leagues/:path*"
+    },
+    {
+      "source": "/api/news",
+      "destination": "https://be-teras-sports.rizkimgrms.workers.dev/api/news"
+    },
+    {
+      "source": "/api/sports/:path*",
+      "destination": "https://be-teras-sports.rizkimgrms.workers.dev/api/sports/:path*"
+    },
+    {
       "source": "/app",
       "destination": "/api/proxy?proxyProvider=app"
     },
