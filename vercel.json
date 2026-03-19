@@ -6,6 +6,10 @@
       "destination": "https://be-teras-sports.rizkimgrms.workers.dev/api/home"
     },
     {
+      "source": "/api/health",
+      "destination": "https://be-teras-sports.rizkimgrms.workers.dev/api/health"
+    },
+    {
       "source": "/api/live",
       "destination": "https://be-teras-sports.rizkimgrms.workers.dev/api/live"
     },
